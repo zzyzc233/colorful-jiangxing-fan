@@ -1,0 +1,10 @@
+﻿{
+  // 将星风扇管家 v0.3 —— OEM 通道（InsydeDCHU.dll）配置
+  "telemetryPollMs": 1000,     // 遥测轮询间隔（与 Control Center 相当，勿调低于 500）
+  "defaultMode": 6,            // 开机自动应用的模式：6=自定义曲线 0=自动 3=固件静音
+  "applyModeOnStart": true,   // 启动后自动应用当前曲线（UI 里也可勾选）
+  "hotCpuTemp": 97,            // 紧急兜底：超过则全速散热（正常由曲线自己渐变，不应触发）
+  "hotGpuTemp": 97,
+  "coolCpuTemp": 90,           // 双双回落后自动恢复曲线
+  "coolGpuTemp": 90
+}

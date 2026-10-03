@@ -1,0 +1,24 @@
+# 构建产物
+bin/
+obj/
+app/
+release/stage/
+
+# 运行时数据（含本机 EC 快照，勿外传）
+logs/
+*.bin
+
+# 发行包
+*.zip
+
+# 反编译/官方应用参考资料（版权原因，勿分发）
+tools/central/
+tools/fss/
+tools/fss-decomp/
+probe-bin/
+
+# IDE / 系统
+.vs/
+.idea/
+*.user
+Thumbs.db
