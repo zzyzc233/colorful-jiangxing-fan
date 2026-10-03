@@ -121,10 +121,14 @@ internal static class CurveManager
 
     private static EcWindow _lastCpuWin, _lastGpuWin;
 
-    /// <summary>默认均衡曲线：待机段贴近固件下限（安静），70° 以上保持散热力度。</summary>
+    /// <summary>
+    /// 默认均衡曲线：EC 的 CPU 温度计比游戏加加等软件传感器口径高约 10°C，
+    /// 因此温度轴整体右移补偿——待机段（EC ≤70°，约等于游戏加加 60°）贴着固件
+    /// 下限求安静，80° 以后保持散热力度，95° 以上仍由固件兜底拉满。
+    /// </summary>
     public static FanCurve DefaultCpu() => new()
     {
-        Points = new List<FanPoint> { new(45, 29), new(60, 30), new(70, 38), new(78, 52), new(85, 68), new(92, 85) }
+        Points = new List<FanPoint> { new(50, 29), new(70, 30), new(75, 33), new(80, 38), new(85, 48), new(90, 62), new(95, 80) }
     };
 
     public static FanCurve DefaultGpu() => new()
