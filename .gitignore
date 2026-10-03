@@ -2,7 +2,11 @@
 bin/
 obj/
 app/
-release/stage/
+
+# 发行产物（zip/视频/中间产物不入库；说明文档除外）
+release/*
+!release/使用说明.txt
+!release/*.md
 
 # 运行时数据（含本机 EC 快照，勿外传）
 logs/
