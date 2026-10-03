@@ -31,9 +31,18 @@ internal class FanController : IDisposable
     // 温度毛刺滤波（EC 遥测偶发单帧离谱值，如瞬时 119°C）。-1 = 尚无可信读数
     private int _ctlCpu = -1, _ctlGpu = -1;
     private int _pendCpu = int.MinValue, _pendGpu = int.MinValue;
+    // 本帧实际采用的原始读数（软件传感器优先，EC 兜底；int.MinValue = 无），供过热双确认
+    private int _rawCpu = int.MinValue, _rawGpu = int.MinValue;
     private DateTime _lastGlitchLog = DateTime.MinValue;
     public int CpuTempFiltered => _ctlCpu;
     public int GpuTempFiltered => _ctlGpu;
+
+    // 刚开机/启动时 EC 遥测可能整体失真（曾见 GPU 149°C 而实测 ~60°C），预热期内只观察不动作
+    private DateTime _loopStart = DateTime.Now;
+    private bool _warmupLogged;
+    private const int WarmupSeconds = 90;
+    private const int TempMin = 15, TempMax = 110;   // 物理合理范围，超出即无效读数
+    private static bool InRange(int t) => t is >= TempMin and <= TempMax;
 
     // 接管前状态快照（CC3.0 调度）
     private byte[] _backupTable;
@@ -255,9 +264,24 @@ internal class FanController : IDisposable
             try
             {
                 Last = OemTelemetry.Read();
+                if (_tickCount == 1) _loopStart = DateTime.Now;
                 _tickCount++;
-                FilterGlitch(Last.Valid, Last.CpuTemp, ref _ctlCpu, ref _pendCpu, "CPU");
-                FilterGlitch(Last.Valid, Last.Gpu1Temp, ref _ctlGpu, ref _pendGpu, "GPU");
+
+                // 温度来源：软件传感器（同游戏加加）优先，读不到时回退 EC 遥测
+                var (lCpu, lGpu) = SensorSource.Read();
+                int rawCpu = lCpu ?? (Last.Valid ? Last.CpuTemp : int.MinValue);
+                int rawGpu = lGpu ?? (Last.Valid ? Last.Gpu1Temp : int.MinValue);
+                bool haveCpu = rawCpu != int.MinValue, haveGpu = rawGpu != int.MinValue;
+                _rawCpu = haveCpu ? rawCpu : int.MinValue;
+                _rawGpu = haveGpu ? rawGpu : int.MinValue;
+                FilterGlitch(haveCpu, rawCpu, ref _ctlCpu, ref _pendCpu, "CPU");
+                FilterGlitch(haveGpu, rawGpu, ref _ctlGpu, ref _pendGpu, "GPU");
+                bool warmingUp = (DateTime.Now - _loopStart).TotalSeconds < WarmupSeconds;
+                if (warmingUp && !_warmupLogged)
+                {
+                    _warmupLogged = true;
+                    Logger.Info($"启动预热期（{WarmupSeconds} 秒）：EC 遥测可能失真，监护暂不动作");
+                }
 
                 if (State == ControllerState.Managed && TargetMode == 6 && !_hotTriggered)
                 {
@@ -280,17 +304,22 @@ internal class FanController : IDisposable
                         CurveManager.Apply(CurveManager.Cpu, CurveManager.Gpu, cpuT, gpuT);
                         Logger.Info("定期重申静音曲线（保持对 Control Center 的覆盖）");
                     }
-                    // 多点曲线：温度跨区间时把所在区间的两点窗口写进 EC 表（偏差 ≥3% 才写）
-                    CurveManager.RefreshWindows(cpuT, gpuT);
+                    // 多点曲线：温度跨区间时把所在区间的两点窗口写进 EC 表（偏差 ≥3% 才写）；预热期不换挡
+                    if (!warmingUp)
+                        CurveManager.RefreshWindows(cpuT, gpuT);
                 }
 
                 if (State == ControllerState.Managed && TargetMode != 0 && TargetMode != 1)
                 {
-                    // 高温监护（带去抖，用滤波后温度）：CPU 或 GPU 过热 → 全速；双双回落后再恢复
-                    bool hot = _ctlCpu >= _cfg.HotCpuTemp || _ctlGpu >= _cfg.HotGpuTemp;
+                    // 高温监护：滤波值与原始值须同时过热（双重确认），且读数在合理范围、已过预热期。
+                    // 刚开机时 EC 遥测可能整体失真（GPU 报 149°C 而实测 60°C），单靠滤波值会误拉全速。
+                    bool hot = _ctlCpu >= 0 && _ctlGpu >= 0 &&
+                               (_ctlCpu >= _cfg.HotCpuTemp || _ctlGpu >= _cfg.HotGpuTemp) &&
+                               ((InRange(_rawCpu) && _rawCpu >= _cfg.HotCpuTemp) ||
+                                (InRange(_rawGpu) && _rawGpu >= _cfg.HotGpuTemp));
                     bool cool = _ctlCpu >= 0 && _ctlGpu >= 0 &&
                                 _ctlCpu <= _cfg.CoolCpuTemp && _ctlGpu <= _cfg.CoolGpuTemp;
-                    if (hot)
+                    if (hot && !warmingUp)
                     {
                         if (++_hotStreak >= 3 && !_hotTriggered)
                         {
@@ -299,7 +328,7 @@ internal class FanController : IDisposable
                             if (OemChannel.SetFanMode(1))
                             {
                                 ActiveMode = 1;
-                                string msg = $"CPU {Last.CpuTemp}°C / GPU {Last.Gpu1Temp}°C 过热，已自动切到全速散热";
+                                string msg = $"CPU {_ctlCpu}°C / GPU {_ctlGpu}°C 过热，已自动切到全速散热";
                                 Logger.Info(msg);
                                 LastAlert = msg;
                                 RaiseAlert(msg);
@@ -345,7 +374,17 @@ internal class FanController : IDisposable
     private void FilterGlitch(bool valid, int raw, ref int ctl, ref int pending, string fan)
     {
         if (!valid) return;
-        if (ctl < 0) { ctl = raw; return; }                        // 首帧直接采信
+        if (!InRange(raw))
+        {
+            // 物理上不可能的温度（如 GPU 149°C）：整帧丢弃，不进滤波、不更新显示与控制
+            if ((DateTime.Now - _lastGlitchLog).TotalSeconds >= 60)
+            {
+                _lastGlitchLog = DateTime.Now;
+                Logger.Info($"丢弃 {fan} 温度无效读数: {raw}°C（超出 {TempMin}-{TempMax}°C 合理范围）");
+            }
+            return;
+        }
+        if (ctl < 0) { ctl = raw; return; }                        // 首个合理读数直接采信
         if (Math.Abs(raw - ctl) <= 15)                             // 正常波动
         {
             pending = int.MinValue;

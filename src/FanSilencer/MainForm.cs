@@ -237,6 +237,7 @@ internal class MainForm : Form
         string appDir = AppContext.BaseDirectory;
         Logger.Init(Path.Combine(appDir, "logs"));   // 日志跟着 exe 走，便携场景不写到上级目录
         Logger.Info("===== 将星风扇管家 v0.5（OEM 通道 + 多点曲线）启动 =====");
+        SensorSource.Init();   // 软件传感器（CPU/GPU 温度与游戏加加同源），失败自动回退 EC
 
         _cfg = EcConfig.Load(Path.Combine(appDir, "config.json"));
         _controller = new FanController(_cfg);
