@@ -267,10 +267,10 @@ internal class FanController : IDisposable
                 if (_tickCount == 1) _loopStart = DateTime.Now;
                 _tickCount++;
 
-                // 温度来源：软件传感器（同游戏加加）优先，读不到时回退 EC 遥测
-                var (lCpu, lGpu) = SensorSource.Read();
-                int rawCpu = lCpu ?? (Last.Valid ? Last.CpuTemp : int.MinValue);
-                int rawGpu = lGpu ?? (Last.Valid ? Last.Gpu1Temp : int.MinValue);
+                // 温度来源：GPU 走显卡驱动接口（与游戏加加同源）；CPU 用 EC（与风扇固件
+                // 实际依据一致——CPU 结温在负载突刺时会比游戏加加显示的温度高 15-20°C）
+                int rawCpu = Last.Valid ? Last.CpuTemp : int.MinValue;
+                int rawGpu = SensorSource.ReadGpu() ?? (Last.Valid ? Last.Gpu1Temp : int.MinValue);
                 bool haveCpu = rawCpu != int.MinValue, haveGpu = rawGpu != int.MinValue;
                 _rawCpu = haveCpu ? rawCpu : int.MinValue;
                 _rawGpu = haveGpu ? rawGpu : int.MinValue;
