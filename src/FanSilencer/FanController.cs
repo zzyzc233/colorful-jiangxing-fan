@@ -31,6 +31,9 @@ internal class FanController : IDisposable
     // 温度毛刺滤波（EC 遥测偶发单帧离谱值，如瞬时 119°C）。-1 = 尚无可信读数
     private int _ctlCpu = -1, _ctlGpu = -1;
     private int _pendCpu = int.MinValue, _pendGpu = int.MinValue;
+    // 中位数预滤波缓冲：吸收 ±15°C 以内的单帧跳变（负载突刺 / EC 抖动）
+    private readonly int[] _medCpuBuf = new int[3], _medGpuBuf = new int[3];
+    private int _medCpuN, _medGpuN;
     // 本帧实际采用的原始读数（软件传感器优先，EC 兜底；int.MinValue = 无），供过热双确认
     private int _rawCpu = int.MinValue, _rawGpu = int.MinValue;
     private DateTime _lastGlitchLog = DateTime.MinValue;
@@ -274,8 +277,8 @@ internal class FanController : IDisposable
                 bool haveCpu = rawCpu != int.MinValue, haveGpu = rawGpu != int.MinValue;
                 _rawCpu = haveCpu ? rawCpu : int.MinValue;
                 _rawGpu = haveGpu ? rawGpu : int.MinValue;
-                FilterGlitch(haveCpu, rawCpu, ref _ctlCpu, ref _pendCpu, "CPU");
-                FilterGlitch(haveGpu, rawGpu, ref _ctlGpu, ref _pendGpu, "GPU");
+                FilterGlitch(haveCpu, rawCpu, ref _ctlCpu, ref _pendCpu, "CPU", _medCpuBuf, ref _medCpuN);
+                FilterGlitch(haveGpu, rawGpu, ref _ctlGpu, ref _pendGpu, "GPU", _medGpuBuf, ref _medGpuN);
                 bool warmingUp = (DateTime.Now - _loopStart).TotalSeconds < WarmupSeconds;
                 if (warmingUp && !_warmupLogged)
                 {
@@ -371,7 +374,7 @@ internal class FanController : IDisposable
     /// 风扇实际转速由 EC 按其自身传感器与曲线表实时控制，本滤波只影响
     /// 窗口选择、软件兜底判断与界面显示。
     /// </summary>
-    private void FilterGlitch(bool valid, int raw, ref int ctl, ref int pending, string fan)
+    private void FilterGlitch(bool valid, int raw, ref int ctl, ref int pending, string fan, int[] medBuf, ref int medN)
     {
         if (!valid) return;
         if (!InRange(raw))
@@ -384,6 +387,17 @@ internal class FanController : IDisposable
             }
             return;
         }
+
+        // 中位数预滤波：最后一帧的孤立跳变（负载突刺 / EC 抖动）被中位数直接吸收，
+        // 持续升温（三帧逐级抬高）仍然跟得上
+        medBuf[medN % medBuf.Length] = raw;
+        medN++;
+        int k = Math.Min(medN, medBuf.Length);
+        var tmp = new int[k];
+        Array.Copy(medBuf, tmp, k);
+        Array.Sort(tmp);
+        raw = tmp[(k - 1) / 2];
+
         if (ctl < 0) { ctl = raw; return; }                        // 首个合理读数直接采信
         if (Math.Abs(raw - ctl) <= 15)                             // 正常波动
         {
