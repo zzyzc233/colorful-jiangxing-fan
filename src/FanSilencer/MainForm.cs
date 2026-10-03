@@ -16,6 +16,7 @@ internal class CurveEditor : Control
 {
     private List<FanPoint> _pts = new();
     public event Action Changed;
+    public event Action EditSettled;   // 拖动松手/加点/删点后触发：用于自动持久化
 
     private int _drag = -1, _hover = -1;
     private const int PadL = 36, PadR = 14, PadT = 12, PadB = 24;
@@ -136,6 +137,7 @@ internal class CurveEditor : Control
                 _hover = -1;
                 Invalidate();
                 Changed?.Invoke();
+                EditSettled?.Invoke();
             }
         }
         base.OnMouseDown(e);
@@ -156,6 +158,7 @@ internal class CurveEditor : Control
                 ClampPoint(idx);
                 Invalidate();
                 Changed?.Invoke();
+                EditSettled?.Invoke();
             }
         }
         base.OnMouseDoubleClick(e);
@@ -196,6 +199,7 @@ internal class CurveEditor : Control
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
+        if (_drag >= 0) EditSettled?.Invoke();   // 拖动结束：自动持久化本次调整
         _drag = -1;
         base.OnMouseUp(e);
     }
@@ -320,6 +324,11 @@ internal class MainForm : Form
 
         _editor.Bounds = new Rectangle(20, 216, 460, 218);
         _editor.Changed += () => SaveEditorToCurrentFan();
+        _editor.EditSettled += () =>
+        {
+            SaveEditorToCurrentFan();
+            CurveManager.SaveToFile();   // 拖动/加点/删点即持久化，重启不丢
+        };
 
         var btnPreset = new Button { Bounds = new Rectangle(20, 442, 140, 32), Text = "均衡预置" };
         btnPreset.Click += (_, _) => LoadPreset();
@@ -342,9 +351,9 @@ internal class MainForm : Form
 
         _lblHint.SetBounds(20, 512, 465, 76);
         _lblHint.ForeColor = Color.Gray;
-        _lblHint.Text = "多点曲线随温度自动换区写入 EC，偏差 3% 内不刷表；外部改动 3 秒内顶回；\r\n" +
-                        "CPU/GPU 97°C 全速兜底，回落 4 秒自动恢复；请勿与 CC3.0 同时调风扇。\r\n" +
-                        "主显示为游戏加加口径，括号内 EC 为风扇实际依据；曲线刻度均为 EC 口径。";
+        _lblHint.Text = "多点曲线按温度自动换区写入 EC；拖动自动保存，点「应用曲线」立即生效；\r\n" +
+                        "外部改动 3 秒内顶回；97° 兜底、回落 4 秒恢复；还原原厂默认会作废快照。\r\n" +
+                        "请勿与 CC3.0 同时调风扇。主显示为游戏加加口径，括号 EC 为风扇实际依据。";
 
         Controls.AddRange(new Control[]
         {
