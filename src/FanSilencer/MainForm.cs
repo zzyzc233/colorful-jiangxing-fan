@@ -344,7 +344,7 @@ internal class MainForm : Form
         _lblHint.ForeColor = Color.Gray;
         _lblHint.Text = "多点曲线随温度自动换区写入 EC，偏差 3% 内不刷表；外部改动 3 秒内顶回；\r\n" +
                         "CPU/GPU 97°C 全速兜底，回落 4 秒自动恢复；请勿与 CC3.0 同时调风扇。\r\n" +
-                        "「还原原厂默认」会作废快照（之后退出不再复原）。";
+                        "主显示为游戏加加口径，括号内 EC 为风扇实际依据；曲线刻度均为 EC 口径。";
 
         Controls.AddRange(new Control[]
         {
@@ -492,12 +492,16 @@ internal class MainForm : Form
 
         if (t is { Valid: true })
         {
-            int cpuT = _controller.CpuTempFiltered, gpuT = _controller.GpuTempFiltered;
-            _lblCpu.Text = $"CPU：{(cpuT >= 0 ? cpuT.ToString() : "--")}°C   风扇 {t.CpuDuty * 100 / 255}%   约 {OemTelemetry.DisplayRpm(t.CpuRpmRaw)} RPM";
+            int ec = _controller.CpuTempFiltered, dts = _controller.CpuTempDts, gpuT = _controller.GpuTempFiltered;
+            string cpuShown = dts >= 0
+                ? (ec >= 0 && Math.Abs(dts - ec) >= 3 ? $"{dts}°C（EC {ec}°）" : $"{dts}°C")
+                : (ec >= 0 ? $"{ec}°C" : "--");
+            string cpuTray = dts >= 0 ? dts.ToString() : (ec >= 0 ? ec.ToString() : "--");
+            _lblCpu.Text = $"CPU：{cpuShown}   风扇 {t.CpuDuty * 100 / 255}%   约 {OemTelemetry.DisplayRpm(t.CpuRpmRaw)} RPM";
             _lblGpu.Text = $"GPU：{(gpuT >= 0 ? gpuT.ToString() : "--")}°C   风扇 {t.Gpu1Duty * 100 / 255}%   约 {OemTelemetry.DisplayRpm(t.Gpu1RpmRaw)} RPM";
             _lblRpm.ForeColor = Color.DimGray;
-            _lblRpm.Text = $"CPU 曲线 {Pts(CurveManager.Cpu)}\r\nGPU 曲线 {Pts(CurveManager.Gpu)}";
-            _tray.Text = $"将星风扇管家  CPU {(cpuT >= 0 ? cpuT.ToString() : "--")}°C / GPU {(gpuT >= 0 ? gpuT.ToString() : "--")}°C";
+            _lblRpm.Text = $"CPU 曲线 {Pts(CurveManager.Cpu)}（EC 口径）\r\nGPU 曲线 {Pts(CurveManager.Gpu)}";
+            _tray.Text = $"将星风扇管家  CPU {cpuTray}°C / GPU {(gpuT >= 0 ? gpuT.ToString() : "--")}°C";
         }
         else
         {

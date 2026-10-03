@@ -5,12 +5,10 @@ using LibreHardwareMonitor.Hardware;
 namespace FanSilencer;
 
 /// <summary>
-/// 软件传感器源（LibreHardwareMonitor）：GPU 核心温度走显卡驱动官方接口
-/// （NVML/ADLX），与游戏加加等监控软件同源，避开 EC 的 GPU 遥测失真与
-/// 独显休眠读 0° 的问题。
-/// CPU 温度不用软件传感器——CPU"包温度"（芯片结温）在负载突刺时会比
-/// 游戏加加显示的温度高 15-20°C，而 EC 的 CPU 温度与风扇固件实际依据
-/// 一致、待机时与游戏加加基本吻合，故 CPU 始终以 EC 为准。
+/// 软件传感器源（LibreHardwareMonitor）：
+/// - GPU 核心温度走显卡驱动官方接口（NVML/ADLX），用于控制与显示；
+/// - CPU 包温度走 MSR/DTS（与游戏加加同口径），仅用于显示——CPU 控制始终以
+///   EC 温度为准（风扇固件实际依据），两者的固定口径差约 10°C。
 /// </summary>
 internal static class SensorSource
 {
@@ -23,7 +21,7 @@ internal static class SensorSource
         {
             _computer = new Computer
             {
-                IsCpuEnabled = false,
+                IsCpuEnabled = true,
                 IsGpuEnabled = true,
                 IsMemoryEnabled = false,
                 IsMotherboardEnabled = false,
@@ -45,28 +43,49 @@ internal static class SensorSource
         }
     }
 
-    /// <summary>读取 GPU 核心温度（°C）；不可用返回 null。</summary>
-    public static int? ReadGpu()
+    /// <summary>读取 (CPU 包温度, GPU 核心温度)，单位 °C；某项不可用返回 null。CPU 值仅用于显示。</summary>
+    public static (int? Cpu, int? Gpu) Read()
     {
-        if (!Available) return null;
+        if (!Available) return (null, null);
         try
         {
-            int? gpu = null;
+            int? cpu = null, gpu = null;
             foreach (var hw in _computer.Hardware)
             {
-                if (hw.HardwareType is HardwareType.GpuNvidia or HardwareType.GpuAmd or HardwareType.GpuIntel)
+                switch (hw.HardwareType)
                 {
-                    hw.Update();
-                    gpu = GpuCoreTemp(hw) ?? gpu;
+                    case HardwareType.Cpu:
+                        hw.Update();
+                        cpu = CpuPackageTemp(hw) ?? cpu;
+                        break;
+                    case HardwareType.GpuNvidia:
+                    case HardwareType.GpuAmd:
+                    case HardwareType.GpuIntel:
+                        hw.Update();
+                        gpu = GpuCoreTemp(hw) ?? gpu;
+                        break;
                 }
             }
-            return gpu;
+            return (cpu, gpu);
         }
         catch (Exception ex)
         {
-            Logger.Error("GPU 软件传感器读取失败: " + ex.Message);
-            return null;
+            Logger.Error("软件传感器读取失败: " + ex.Message);
+            return (null, null);
         }
+    }
+
+    /// <summary>CPU 包温度（MSR/DTS 口径）：优先 "CPU Package"/Tctl，退而取核心最高温。</summary>
+    private static int? CpuPackageTemp(IHardware hw)
+    {
+        var temps = hw.Sensors.Where(s => s.SensorType == SensorType.Temperature && s.Value.HasValue).ToList();
+        if (temps.Count == 0) return null;
+        var pkg = temps.FirstOrDefault(s => s.Name == "CPU Package")
+               ?? temps.FirstOrDefault(s => s.Name.Contains("Tctl", StringComparison.OrdinalIgnoreCase))
+               ?? temps.FirstOrDefault(s => s.Name.Contains("Package", StringComparison.OrdinalIgnoreCase));
+        if (pkg != null) return (int)Math.Round(pkg.Value.Value);
+        var cores = temps.Where(s => s.Name.StartsWith("Core", StringComparison.OrdinalIgnoreCase)).ToList();
+        return cores.Count > 0 ? (int)Math.Round(cores.Max(s => s.Value.Value)) : null;
     }
 
     /// <summary>GPU 核心温度：优先 "GPU Core"，避开热结点/显存等次要读数。</summary>

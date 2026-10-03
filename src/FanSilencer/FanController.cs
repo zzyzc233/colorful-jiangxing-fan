@@ -34,6 +34,11 @@ internal class FanController : IDisposable
     // 中位数预滤波缓冲：吸收 ±15°C 以内的单帧跳变（负载突刺 / EC 抖动）
     private readonly int[] _medCpuBuf = new int[3], _medGpuBuf = new int[3];
     private int _medCpuN, _medGpuN;
+    // DTS 结温（游戏加加口径，仅显示用）：控制始终以 EC（_ctlCpu）为准
+    private int _dtsCpu = -1;
+    private readonly int[] _dtsMedBuf = new int[3];
+    private int _dtsMedN;
+    public int CpuTempDts => _dtsCpu;
     // 本帧实际采用的原始读数（软件传感器优先，EC 兜底；int.MinValue = 无），供过热双确认
     private int _rawCpu = int.MinValue, _rawGpu = int.MinValue;
     private DateTime _lastGlitchLog = DateTime.MinValue;
@@ -270,15 +275,17 @@ internal class FanController : IDisposable
                 if (_tickCount == 1) _loopStart = DateTime.Now;
                 _tickCount++;
 
-                // 温度来源：GPU 走显卡驱动接口（与游戏加加同源）；CPU 用 EC（与风扇固件
-                // 实际依据一致——CPU 结温在负载突刺时会比游戏加加显示的温度高 15-20°C）
+                // 温度来源：CPU 控制用 EC（与风扇固件实际依据一致）；GPU 走显卡驱动接口。
+                // 另读一路 MSR/DTS 结温（游戏加加口径）仅用于显示。
+                var (dtsCpu, lGpu) = SensorSource.Read();
                 int rawCpu = Last.Valid ? Last.CpuTemp : int.MinValue;
-                int rawGpu = SensorSource.ReadGpu() ?? (Last.Valid ? Last.Gpu1Temp : int.MinValue);
+                int rawGpu = lGpu ?? (Last.Valid ? Last.Gpu1Temp : int.MinValue);
                 bool haveCpu = rawCpu != int.MinValue, haveGpu = rawGpu != int.MinValue;
                 _rawCpu = haveCpu ? rawCpu : int.MinValue;
                 _rawGpu = haveGpu ? rawGpu : int.MinValue;
                 FilterGlitch(haveCpu, rawCpu, ref _ctlCpu, ref _pendCpu, "CPU", _medCpuBuf, ref _medCpuN);
                 FilterGlitch(haveGpu, rawGpu, ref _ctlGpu, ref _pendGpu, "GPU", _medGpuBuf, ref _medGpuN);
+                _dtsCpu = FeedDisplay(dtsCpu, _dtsCpu, _dtsMedBuf, ref _dtsMedN);
                 bool warmingUp = (DateTime.Now - _loopStart).TotalSeconds < WarmupSeconds;
                 if (warmingUp && !_warmupLogged)
                 {
@@ -417,6 +424,19 @@ internal class FanController : IDisposable
             _lastGlitchLog = DateTime.Now;
             Logger.Info($"忽略 {fan} 温度单帧毛刺: {raw}°C（上一可信 {ctl}°C）");
         }
+    }
+
+    /// <summary>显示温度专用：中位数滤波（吸收单帧跳变），不影响任何控制决策。</summary>
+    private int FeedDisplay(int? raw, int cur, int[] buf, ref int n)
+    {
+        if (!raw.HasValue || !InRange(raw.Value)) return cur;
+        buf[n % buf.Length] = raw.Value;
+        n++;
+        int k = Math.Min(n, buf.Length);
+        var tmp = new int[k];
+        Array.Copy(buf, tmp, k);
+        Array.Sort(tmp);
+        return tmp[(k - 1) / 2];
     }
 
     public static string ModeName(int mode) => mode switch
