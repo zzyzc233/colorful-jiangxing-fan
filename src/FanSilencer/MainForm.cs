@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace FanSilencer;
@@ -596,6 +597,44 @@ internal class MainForm : Form
             Logger.Info("系统从睡眠唤醒，OEM 通道已重置");
         }
         base.WndProc(ref m);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WM_POWERBROADCAST = 0x0218;
+        const int PBT_APMRESUMESUSPEND = 0x07;      // 睡眠唤醒
+        const int PBT_APMRESUMEAUTOMATIC = 0x12;    // 自动唤醒
+        if (m.Msg == WM_POWERBROADCAST && (m.WParam.ToInt64() is PBT_APMRESUMESUSPEND or PBT_APMRESUMEAUTOMATIC))
+        {
+            OemChannel.Reset();   // 唤醒后驱动句柄失效，重置防止遥测冻结
+            Logger.Info("系统从睡眠唤醒，OEM 通道已重置");
+        }
+        const int WM_QUERYENDSESSION = 0x0011;      // 系统即将关机/注销：记录现场，便于事后排查"不明关机"
+        if (m.Msg == WM_QUERYENDSESSION)
+        {
+            try
+            {
+                string fg = "未知";
+                var h = Forensics.GetForegroundWindow();
+                if (h != IntPtr.Zero && Forensics.GetWindowThreadProcessId(h, out uint procId) != 0)
+                    fg = Process.GetProcessById((int)procId)?.ProcessName ?? "未知";
+                var apps = Process.GetProcesses()
+                    .Where(pr => !string.IsNullOrWhiteSpace(pr.MainWindowTitle))
+                    .Select(pr => pr.ProcessName)
+                    .Take(10).ToList();
+                Logger.Info($"系统即将关机/注销（ lParam=0x{m.LParam.ToInt64():X} ）现场: 前台={fg}；带窗口进程={string.Join("/", apps)}");
+            }
+            catch (Exception ex) { Logger.Error("关机现场记录失败: " + ex.Message); }
+        }
+        base.WndProc(ref m);
+    }
+
+    private static class Forensics
+    {
+        [DllImport("user32.dll")]
+        public static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")]
+        public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
