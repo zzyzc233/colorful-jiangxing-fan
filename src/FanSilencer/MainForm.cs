@@ -498,8 +498,10 @@ internal class MainForm : Form
         };
         if (_controller.TelemetryStale)
             statusText += "　⚠ 遥测停滞，正在自动恢复…";
+        else if (_controller.CurveOverridden)
+            statusText += "　⚠ 曲线被外部覆盖（CC3.0 性能模式？）";
         _lblStatus.Text = statusText;
-        _lblStatus.ForeColor = _controller.TelemetryStale ? Color.Orange :
+        _lblStatus.ForeColor = _controller.TelemetryStale || _controller.CurveOverridden ? Color.Orange :
                                st == ControllerState.Managed ? Color.Green :
                                st == ControllerState.Fault ? Color.Red : Color.Black;
 

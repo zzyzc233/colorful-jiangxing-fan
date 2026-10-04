@@ -58,6 +58,12 @@ internal class FanController : IDisposable
     private DateTime _lastChannelReset = DateTime.MinValue;
     public bool TelemetryStale => _staleTicks >= 10;
 
+    // 曲线遵循度检测：外部软件（如 CC3.0 性能模式）可能绕过模式字节直接覆盖风扇
+    private int _deviateTicks;
+    private bool _deviateWarned;
+    private DateTime _lastDevLog = DateTime.MinValue;
+    public bool CurveOverridden => _deviateWarned;
+
     // 接管前状态快照（CC3.0 调度）
     private byte[] _backupTable;
     private byte[] _backupAppData;
@@ -348,6 +354,41 @@ internal class FanController : IDisposable
                     // 多点曲线：温度跨区间时把所在区间的两点窗口写进 EC 表（偏差 ≥3% 才写）；预热期不换挡
                     if (!warmingUp)
                         CurveManager.RefreshWindows(cpuT, gpuT);
+
+                    // 曲线遵循度检查：EC 实际占空比 vs 曲线期望。持续偏差 = 被外部软件
+                    // （CC3.0 性能模式等）绕过模式字节直接覆盖 → 重写一次并明示用户。
+                    if (Last.Valid && !warmingUp && _ctlCpu >= 0 && _ctlGpu >= 0)
+                    {
+                        int expectC = CurveManager.Cpu.DutyAt(_ctlCpu);
+                        int actualC = Last.CpuDuty * 100 / 255;
+                        int expectG = CurveManager.Gpu.DutyAt(_ctlGpu);
+                        int actualG = Last.Gpu1Duty * 100 / 255;
+                        if (Math.Abs(actualC - expectC) >= 12 || Math.Abs(actualG - expectG) >= 12)
+                        {
+                            if (++_deviateTicks >= 6)
+                            {
+                                if (!_deviateWarned)
+                                {
+                                    _deviateWarned = true;
+                                    string msg = $"检测到风扇曲线被外部覆盖（实际 {actualC}/{actualG}% vs 曲线 {expectC}/{expectG}%），已重新写入。" +
+                                                 "若持续出现，请退出 CC3.0 的性能模式或关闭 CC3.0";
+                                    Logger.Info(msg);
+                                    RaiseAlert(msg);
+                                    CurveManager.Apply(CurveManager.Cpu, CurveManager.Gpu, cpuT, gpuT);
+                                }
+                                else if ((DateTime.Now - _lastDevLog).TotalSeconds >= 60)
+                                {
+                                    _lastDevLog = DateTime.Now;
+                                    Logger.Info($"曲线仍被外部覆盖: 实际 {actualC}/{actualG}% vs 曲线 {expectC}/{expectG}%（CC3.0 性能模式？）");
+                                }
+                            }
+                        }
+                        else
+                        {
+                            _deviateTicks = 0;
+                            _deviateWarned = false;
+                        }
+                    }
                 }
 
                 if (State == ControllerState.Managed && TargetMode != 0 && TargetMode != 1)
