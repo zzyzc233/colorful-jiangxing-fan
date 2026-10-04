@@ -31,8 +31,49 @@ internal static class ProbeCommands
         if (args.Length >= 2 && args[1] == "oem") return OemProbe(args);
         if (args.Length >= 2 && args[1] == "oem-mode") return OemSetMode(args);
         if (args.Length >= 2 && args[1] == "oem-curve") return OemCurve(args);
-        Say("用法: FanSilencer probe oem | oem-mode <0|1|3> | oem-curve show|apply|restore");
+        if (args.Length >= 2 && args[1] == "power") return PowerProbe();
+        Say("用法: FanSilencer probe oem | oem-mode <0|1|3> | oem-curve show|apply|restore | power");
         return 1;
+    }
+
+    /// <summary>只读探测：功耗墙控制可行性（命令 122 支持位 / 包 16、18 / 命令 6 当前值）。</summary>
+    private static int PowerProbe()
+    {
+        Say("== 电源/功耗墙只读探测 ==");
+        if (!OemChannel.Init())
+        {
+            Say("错误：InsydeDCHU.dll 加载失败");
+            return 2;
+        }
+
+        int? v122 = OemChannel.GetInteger(122);
+        bool oc = v122.HasValue && ((v122.Value >> 23) & 1) == 1;
+        Say($"  命令122 = {v122}  →  bit23 CPU-OC 支持: {(oc ? "是" : "否")}");
+        int? v257 = OemChannel.GetInteger(257);
+        Say($"  命令257 (官方 GetPowerMode 候选) = {v257}");
+        // 注意：切勿对本命令空间做盲目扫描——标量命令不全是查询，部分是
+        // 动作（实测扫到某条命令直接注入了电源键事件导致系统睡眠）。
+
+        var p16 = new byte[256];
+        if (OemChannel.GetBuffer(16, p16) != null)
+            Say("  包16 头部: " + Convert.ToHexString(p16, 0, 16));
+        var p18 = new byte[256];
+        if (OemChannel.GetBuffer(18, p18) != null)
+            Say("  包18 头部: " + Convert.ToHexString(p18, 0, 16));
+
+        // 官方读法：SetDCHU(6, 子命令) 选择寄存器 → GetInteger(4) 取值
+        foreach (var (sub, name) in new[] { (33u, "PL1"), (37u, "PL2"), (41u, "PL时间窗") })
+        {
+            if (!OemChannel.SetWMI(6, (byte)sub, 0))
+            {
+                Say($"  {name}: 写选择器失败");
+                continue;
+            }
+            var v = OemChannel.GetInteger(4);
+            Say($"  子命令{sub} {name} 当前值: {v}");
+        }
+        Say("== 探测结束（未做任何写入） ==");
+        return 0;
     }
 
     /// <summary>自定义风扇曲线：show=读固件表；apply=写静音曲线+模式6；restore=还原原厂表+模式0。</summary>
