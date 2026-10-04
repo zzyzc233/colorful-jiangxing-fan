@@ -26,3 +26,4 @@ probe-bin/
 .idea/
 *.user
 Thumbs.db
+docs/REVERSE-ENGINEERING.md
