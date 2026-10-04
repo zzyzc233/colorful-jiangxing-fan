@@ -52,6 +52,12 @@ internal class FanController : IDisposable
     private const int TempMin = 15, TempMax = 110;   // 物理合理范围，超出即无效读数
     private static bool InRange(int t) => t is >= TempMin and <= TempMax;
 
+    // 遥测冻结检测：睡眠唤醒后驱动句柄失效，表现为所有读数长时间纹丝不动
+    private string _lastTelSig = "";
+    private int _staleTicks;
+    private DateTime _lastChannelReset = DateTime.MinValue;
+    public bool TelemetryStale => _staleTicks >= 10;
+
     // 接管前状态快照（CC3.0 调度）
     private byte[] _backupTable;
     private byte[] _backupAppData;
@@ -274,6 +280,31 @@ internal class FanController : IDisposable
                 Last = OemTelemetry.Read();
                 if (_tickCount == 1) _loopStart = DateTime.Now;
                 _tickCount++;
+
+                // 遥测冻结检测：睡眠唤醒后句柄失效 → 每次读回同一份过期缓冲。
+                // 连续 30 秒全部读数纹丝不动 → 重置 OEM 通道自我恢复。
+                if (Last.Valid)
+                {
+                    string sig = $"{Last.CpuTemp}|{Last.Gpu1Temp}|{Last.CpuDuty}|{Last.Gpu1Duty}|{Last.CpuRpmRaw}|{Last.Gpu1RpmRaw}";
+                    if (sig == _lastTelSig)
+                    {
+                        if (++_staleTicks >= 30 && (DateTime.Now - _lastChannelReset).TotalSeconds >= 60)
+                        {
+                            _staleTicks = 0;
+                            _lastChannelReset = DateTime.Now;
+                            OemChannel.Reset();
+                            string msg = "温度遥测连续 30 秒无变化，疑似睡眠唤醒后通道失联，已自动重置";
+                            Logger.Info(msg);
+                            RaiseAlert(msg);
+                        }
+                    }
+                    else
+                    {
+                        _staleTicks = 0;
+                        _lastTelSig = sig;
+                    }
+                }
+                else _staleTicks = 0;
 
                 // 温度来源：CPU 控制用 EC（与风扇固件实际依据一致）；GPU 走显卡驱动接口。
                 // 另读一路 MSR/DTS 结温（游戏加加口径）仅用于显示。

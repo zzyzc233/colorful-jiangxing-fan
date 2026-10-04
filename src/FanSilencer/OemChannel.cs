@@ -27,33 +27,56 @@ internal static class OemChannel
     private static IntPtr _lib = IntPtr.Zero;
     public static bool Available { get; private set; }
     public static string DllPath { get; private set; } = "";
+    private static readonly object IoLock = new();   // 序列化所有通道调用，使 Reset 期间无并发调用
 
     public static bool Init()
     {
-        if (_lib != IntPtr.Zero) return Available;
-        try
+        lock (IoLock)
         {
-            string[] candidates =
+            if (_lib != IntPtr.Zero) return Available;
+            try
             {
-                @"C:\Program Files (x86)\ControlCenter\InsydeDCHU.dll",
-                Path.Combine(AppContext.BaseDirectory, "InsydeDCHU.dll")
-            };
-            foreach (var path in candidates)
-            {
-                if (!File.Exists(path)) continue;
-                _lib = NativeLibrary.Load(path);
-                DllPath = path;
-                Available = true;
-                Logger.Info("OEM 通道已加载: " + path);
-                break;
+                string[] candidates =
+                {
+                    @"C:\Program Files (x86)\ControlCenter\InsydeDCHU.dll",
+                    Path.Combine(AppContext.BaseDirectory, "InsydeDCHU.dll")
+                };
+                foreach (var path in candidates)
+                {
+                    if (!File.Exists(path)) continue;
+                    _lib = NativeLibrary.Load(path);
+                    DllPath = path;
+                    Available = true;
+                    Logger.Info("OEM 通道已加载: " + path);
+                    break;
+                }
+                if (!Available) Logger.Error("未找到 InsydeDCHU.dll");
             }
-            if (!Available) Logger.Error("未找到 InsydeDCHU.dll");
+            catch (Exception ex)
+            {
+                Logger.Error("InsydeDCHU.dll 加载失败: " + ex.Message);
+            }
+            return Available;
         }
-        catch (Exception ex)
+    }
+
+    /// <summary>
+    /// 重置通道：系统睡眠唤醒后驱动句柄会失效，表现为每次读回同一份过期缓冲
+    /// （温度/转速/占空比全部冻结）。释放并重新加载 InsydeDCHU.dll 即可恢复。
+    /// </summary>
+    public static void Reset()
+    {
+        lock (IoLock)
         {
-            Logger.Error("InsydeDCHU.dll 加载失败: " + ex.Message);
+            try
+            {
+                if (_lib != IntPtr.Zero) NativeLibrary.Free(_lib);
+            }
+            catch (Exception ex) { Logger.Error("通道释放失败: " + ex.Message); }
+            _lib = IntPtr.Zero;
+            Available = false;
         }
-        return Available;
+        Init();
     }
 
     // ----- 签名与官方 FanSpeedSetting 反编译源码一致 -----
@@ -78,9 +101,12 @@ internal static class OemChannel
         if (!Available) return null;
         try
         {
-            int data = 0;
-            GetDCHU_Data_Integer(command, ref data);
-            return data;
+            lock (IoLock)
+            {
+                int data = 0;
+                GetDCHU_Data_Integer(command, ref data);
+                return data;
+            }
         }
         catch (Exception ex)
         {
@@ -94,7 +120,10 @@ internal static class OemChannel
         if (!Available) return null;
         try
         {
-            return GetDCHU_Data_Buffer(command, ref buffer[0]);
+            lock (IoLock)
+            {
+                return GetDCHU_Data_Buffer(command, ref buffer[0]);
+            }
         }
         catch (Exception ex)
         {
@@ -108,8 +137,11 @@ internal static class OemChannel
         if (!Available) return false;
         try
         {
-            SetDCHU_Data(command, buffer, length);
-            return true;
+            lock (IoLock)
+            {
+                SetDCHU_Data(command, buffer, length);
+                return true;
+            }
         }
         catch (Exception ex)
         {
@@ -136,7 +168,10 @@ internal static class OemChannel
     {
         var buf = new byte[length];
         if (!Available) return buf;
-        try { ReadAppSettings(page, offset, length, ref buf[0]); }
+        try
+        {
+            lock (IoLock) { ReadAppSettings(page, offset, length, ref buf[0]); }
+        }
         catch (Exception ex) { Logger.Error($"GetAppData 异常: {ex.Message}"); }
         return buf;
     }
@@ -144,7 +179,14 @@ internal static class OemChannel
     public static bool SetAppData(int page, int offset, byte[] data)
     {
         if (!Available) return false;
-        try { WriteAppSettings(page, offset, data.Length, ref data[0]); return true; }
+        try
+        {
+            lock (IoLock)
+            {
+                WriteAppSettings(page, offset, data.Length, ref data[0]);
+                return true;
+            }
+        }
         catch (Exception ex) { Logger.Error($"SetAppData 异常: {ex.Message}"); return false; }
     }
 }

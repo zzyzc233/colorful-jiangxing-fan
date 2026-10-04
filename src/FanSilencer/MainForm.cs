@@ -490,13 +490,17 @@ internal class MainForm : Form
             : FanController.ModeName(_controller.TargetMode) +
               (_controller.ActiveMode != _controller.TargetMode
                   ? $"（过热保护中，实际：{FanController.ModeName(_controller.ActiveMode)}）" : "");
-        _lblStatus.Text = st switch
+        string statusText = st switch
         {
             ControllerState.Managed => $"状态：静音曲线管理中 —— {modeText}",
             ControllerState.Fault => "状态：OEM 通道异常",
             _ => "状态：未管理（固件自动）"
         };
-        _lblStatus.ForeColor = st == ControllerState.Managed ? Color.Green :
+        if (_controller.TelemetryStale)
+            statusText += "　⚠ 遥测停滞，正在自动恢复…";
+        _lblStatus.Text = statusText;
+        _lblStatus.ForeColor = _controller.TelemetryStale ? Color.Orange :
+                               st == ControllerState.Managed ? Color.Green :
                                st == ControllerState.Fault ? Color.Red : Color.Black;
 
         if (t is { Valid: true })
@@ -577,6 +581,19 @@ internal class MainForm : Form
         _controller.RestoreControlCenterState();
         _tray.Visible = false;
         Application.Exit();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WM_POWERBROADCAST = 0x0218;
+        const int PBT_APMRESUMESUSPEND = 0x07;      // 睡眠唤醒
+        const int PBT_APMRESUMEAUTOMATIC = 0x12;    // 自动唤醒
+        if (m.Msg == WM_POWERBROADCAST && (m.WParam.ToInt64() is PBT_APMRESUMESUSPEND or PBT_APMRESUMEAUTOMATIC))
+        {
+            OemChannel.Reset();   // 唤醒后驱动句柄失效，重置防止遥测冻结
+            Logger.Info("系统从睡眠唤醒，OEM 通道已重置");
+        }
+        base.WndProc(ref m);
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
